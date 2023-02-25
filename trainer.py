@@ -63,16 +63,17 @@ def train():
     actors = [QActor().to(device) for _ in range(n_agents)]
     critic = QCritic().to(device)    
     critic_target = copy.deepcopy(critic)
+    # critic_target = QCritic().to(device)  
     critic_target.load_state_dict(critic.state_dict())
     replay     = ReplayBuffer(device)
     Qoptimizer = [optim.Adam(actors[i].parameters(), lr=a_lr) for i in range(n_agents)]
     Scheduler  = [CosineAnnealingLR(Qoptimizer[i], T_max=n_epochs) for i in range(n_agents)]
     Voptimizer = optim.Adam(critic.parameters(), lr = c_lr)
 
-    if static:
-        for i in range(n_agents):
+    # if static:
+    #     for i in range(n_agents):
             
-            actors[i].q_layer.static_on(wires_per_block=wires_per_block)
+    #         actors[i].q_layer.static_on(wires_per_block=wires_per_block)
 
     for epoch in range(1, n_epochs + 1):
         

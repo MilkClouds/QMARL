@@ -14,55 +14,44 @@ from Environment import ENV
 from torch.utils.tensorboard import SummaryWriter
 from datetime import datetime
 
-class QActor(tq.QuantumModule):
-    class QLayer(tq.QuantumModule):
-        def __init__(self):
-            super().__init__()
-            self.n_wires = 4
-            self.random_layer = tq.RandomLayer(n_ops=50,
-                                               wires=list(range(self.n_wires)))
-            # gates with trainable parameters
-            self.rx0 = tq.RX(has_params=True, trainable=True)
-            self.ry0 = tq.RY(has_params=True, trainable=True)
-            self.rz0 = tq.RZ(has_params=True, trainable=True)
-            self.crx0 = tq.CRX(has_params=True, trainable=True)
+import pennylane as qml
+import pennylane.numpy as np
 
-        @tq.static_support
-        def forward(self, q_device: tq.QuantumDevice):
-            """
-            1. To convert tq QuantumModule to qiskit or run in the static
-            model, need to:
-                (1) add @tq.static_support before the forward
-                (2) make sure to add
-                    static=self.static_mode and
-                    parent_graph=self.graph
-                    to all the tqf functions, such as tqf.hadamard below
-            """
-            self.q_device = q_device
 
-            self.random_layer(self.q_device)
+# q_device = qml.device("lightning.gpu", wires=4, batch_obs=True)
+q_device = qml.device("default.qubit", wires=4)
+@qml.qnode(q_device)
+def circuit_actor(inputs, weights):
+    x = inputs
+    qml.AngleEmbedding(x, wires=q_device.wires, rotation='Y')
+    qml.RandomLayers(weights, wires=q_device.wires)
+    qml.PauliX(wires=0)
+    qml.PauliY(wires=1)
+    qml.PauliZ(wires=3)
+    qml.CNOT(wires=(0, 2))
+    return [qml.expval(qml.PauliZ(i)) for i in q_device.wires]
 
-            # some trainable gates (instantiated ahead of time)
-            self.rx0(self.q_device, wires=0)
-            self.ry0(self.q_device, wires=1)
-            self.rz0(self.q_device, wires=3)
-            self.crx0(self.q_device, wires=[0, 2])
-            """
-            # add some more non-parameterized gates (add on-the-fly)
-            tqf.hadamard(self.q_device, wires=3, static=self.static_mode,
-                         parent_graph=self.graph)
-            tqf.sx(self.q_device, wires=2, static=self.static_mode,
-                   parent_graph=self.graph)
-            tqf.cnot(self.q_device, wires=[3, 0], static=self.static_mode,
-                     parent_graph=self.graph)
-            """
+@qml.qnode(q_device)
+def circuit_critic(inputs, weights):
+    x = inputs
+    qml.AngleEmbedding(x[:4], wires=q_device.wires, rotation='Y')
+    qml.AngleEmbedding(x[4:8], wires=q_device.wires, rotation='Z')
+    qml.AngleEmbedding(x[8:12], wires=q_device.wires, rotation='X')
+    qml.AngleEmbedding(x[12:], wires=q_device.wires, rotation='Y')
+    qml.RandomLayers(weights, wires=q_device.wires)
+    qml.PauliX(wires=0)
+    qml.PauliY(wires=1)
+    qml.PauliZ(wires=3)
+    qml.CNOT(wires=(0, 2))
+    return [qml.expval(qml.PauliZ(i)) for i in q_device.wires]
+class QActor(nn.Module):
+
     def __init__(self):
         super().__init__()
         self.n_wires = 4
-        self.q_device = tq.QuantumDevice(n_wires=self.n_wires)
-        self.encoder = tq.GeneralEncoder(tq.encoder_op_list_name_dict['4_ry'])
-        self.q_layer = self.QLayer()
-        self.measure = tq.MeasureAll(tq.PauliZ)
+        # self.q_layer = QLayer_Actor(self.n_wires, self.q_device)
+        weight_shapes = {"weights": qml.RandomLayers.shape(n_layers=10, n_rotations=4)}
+        self.q_layer = qml.qnn.TorchLayer(circuit_actor, weight_shapes)
 
     def forward(self, x, use_qiskit=False):
         # bsz = x.shape[0]
@@ -71,9 +60,11 @@ class QActor(tq.QuantumModule):
         if use_qiskit:
             x = self.qiskit_processor.process_parameterized(self.q_device, self.encoder, self.q_layer, self.measure, x)
         else:
-            self.encoder(self.q_device, x)
-            self.q_layer(self.q_device)
-            x = self.measure(self.q_device)
+            # self.encoder(self.q_device, x)
+            # self.q_layer(self.q_device)
+            # x = self.measure(self.q_device)
+            # x = self.q_layer(self.q_device)
+            x = self.q_layer(x)
 
         # x = x.reshape(bsz, 2, 2).sum(-1).squeeze()
         x = F.softmax(x*4, dim=1)
@@ -81,55 +72,12 @@ class QActor(tq.QuantumModule):
         return x
     
 
-class QCritic(tq.QuantumModule):
-    class QLayer(tq.QuantumModule):
-        def __init__(self):
-            super().__init__()
-            self.n_wires = 4
-            self.random_layer = tq.RandomLayer(n_ops=50,
-                                               wires=list(range(self.n_wires)))
-            # gates with trainable parameters
-            self.rx0 = tq.RX(has_params=True, trainable=True)
-            self.ry0 = tq.RY(has_params=True, trainable=True)
-            self.rz0 = tq.RZ(has_params=True, trainable=True)
-            self.crx0 = tq.CRX(has_params=True, trainable=True)
-
-        @tq.static_support
-        def forward(self, q_device: tq.QuantumDevice):
-            """
-            1. To convert tq QuantumModule to qiskit or run in the static
-            model, need to:
-                (1) add @tq.static_support before the forward
-                (2) make sure to add
-                    static=self.static_mode and
-                    parent_graph=self.graph
-                    to all the tqf functions, such as tqf.hadamard below
-            """
-            self.q_device = q_device
-
-            self.random_layer(self.q_device)
-
-            # some trainable gates (instantiated ahead of time)
-            self.rx0(self.q_device, wires=0)
-            self.ry0(self.q_device, wires=1)
-            self.rz0(self.q_device, wires=3)
-            self.crx0(self.q_device, wires=[0, 2])
-            """
-            # add some more non-parameterized gates (add on-the-fly)
-            tqf.hadamard(self.q_device, wires=3, static=self.static_mode,
-                         parent_graph=self.graph)
-            tqf.sx(self.q_device, wires=2, static=self.static_mode,
-                   parent_graph=self.graph)
-            tqf.cnot(self.q_device, wires=[3, 0], static=self.static_mode,
-                     parent_graph=self.graph)
-            """
+class QCritic(nn.Module):
     def __init__(self):
         super().__init__()
         self.n_wires = 4
-        self.q_device = tq.QuantumDevice(n_wires=self.n_wires)
-        self.encoder = tq.GeneralEncoder(tq.encoder_op_list_name_dict['4x4_ryzxy'])
-        self.q_layer = self.QLayer()
-        self.measure = tq.MeasureAll(tq.PauliZ)
+        weight_shapes = {"weights": qml.RandomLayers.shape(n_layers=10, n_rotations=4)}
+        self.q_layer = qml.qnn.TorchLayer(circuit_critic, weight_shapes)
 
     def forward(self, x, use_qiskit=False):
         # bsz = x.shape[0]
@@ -138,9 +86,10 @@ class QCritic(tq.QuantumModule):
         if use_qiskit:
             x = self.qiskit_processor.process_parameterized(self.q_device, self.encoder, self.q_layer, self.measure, x)
         else:
-            self.encoder(self.q_device, x)
-            self.q_layer(self.q_device)
-            x = self.measure(self.q_device)
+            x = self.q_layer(x)
+            # self.encoder(self.q_device, x)
+            # self.q_layer(self.q_device)
+            # x = self.measure(self.q_device)
         x = x.sum(-1) * 20
         return x
     
@@ -166,3 +115,9 @@ class ReplayBuffer:
         return s, a, r, s_prime
         
         
+if __name__ == "__main__":
+    x = torch.Tensor([[0, 0.1, 0.2, 0.3], [0, 0.1, 0.2, 0.4]])
+    act = QActor()
+    print(act(x))
+    print(act.q_layer)
+    print([*act.named_parameters()])
